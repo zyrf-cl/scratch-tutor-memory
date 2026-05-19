@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+*.db
+*.sqlite
+.env
+.env.local
+*.egg-info/
+dist/
+build/
+.idea/
+.vscode/
+
+# Third-party agent repo — not part of this project
+ai-programming-system-backend_hxh/
