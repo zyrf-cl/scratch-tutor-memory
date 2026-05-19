@@ -232,9 +232,9 @@ sprite  sound  motion  sensing  operator  list
 
 **2. 写入失败不要静默吞掉** → 记忆丢一条，下次召回有空洞，agent 表现下降但无人知晓。在调用方加日志或重试。
 
-**3. 默认 embedder 是哈希向量** → 召回质量不如真模型。上线前换 `MEMORY_MODULE_EMBEDDER=sentence-transformer`，或自己实现 `Embedder` Protocol。
+**3. 默认 embedder 行为** → 开箱即用时，`Embedder` 默认是 `bge`（真 sentence-transformers 模型），但用 `FallbackEmbedder` 包了一层 —— 没装 `sentence-transformers` extra 时会**静默退到 hash**。要看到退化日志或强制要求真模型，见第 8 节。
 
-**4. 对话摘要默认是 stub**（拼接学生发言）→ 生产请配 LLM summarizer（设 `MEMORY_MODULE_USE_MIMO=1` + `MIMO_API_KEY`，或自己实现 `DialogSummarizer`）。
+**4. 对话摘要 / 迷思聚类的 LLM 实现已写好但默认关闭** → 设 `MEMORY_MODULE_USE_MIMO=1` + `MIMO_API_KEY` 才会启用。详见第 8 节。
 
 **5. 没有认证、没有限流** → HTTP 模式不要直接暴露公网。挂内网或加网关。
 
@@ -244,7 +244,117 @@ sprite  sound  motion  sensing  operator  list
 
 ---
 
-## 8. 不在 v1 范围内
+## 8. 升级到生产实现
+
+模块里 `Embedder` / `DialogSummarizer` / `MisconceptionDetector` 都是 Protocol，**Stub 实现和真实现都已经写好了**，按下面切换即可。
+
+### 8.1 升级一览
+
+| 接口 | 默认行为 | 启用真实现 |
+|---|---|---|
+| `Embedder` | `bge` 配 hash 退化 | `uv sync --extra st` 装上 sentence-transformers |
+| `DialogSummarizer` | `StubDialogSummarizer`（拼接学生发言） | `MEMORY_MODULE_USE_MIMO=1` + `MIMO_API_KEY` |
+| `MisconceptionDetector` | `StubMisconceptionDetector`（按 concept 计数） | 同上 |
+| `MemoryStore` | `SQLiteStore`（本地文件） | 尚未实现 PostgresStore，自己写或贡献回来 |
+
+### 8.2 完整环境变量表
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `MEMORY_MODULE_DB` | `./memory.db` | SQLite 路径；`:memory:` = 纯内存 |
+| `MEMORY_MODULE_EMBEDDER` | `bge` | `bge` / `hash` / `stub` |
+| `MEMORY_MODULE_EMBEDDING_MODEL` | `BAAI/bge-small-zh-v1.5` | 任何 sentence-transformers 模型名 |
+| `MEMORY_MODULE_EMBEDDING_DEVICE` | 自动 | `cuda` / `cpu` / `mps` |
+| `MEMORY_MODULE_EMBEDDING_STRICT` | `0` | 设 `1` 时缺依赖直接报错，不退化 |
+| `MEMORY_MODULE_USE_MIMO` | `0` | 设 `1` 启用 MiMo 摘要 + 迷思聚类 |
+| `MIMO_API_KEY` | — | MiMo 必填 |
+| `MIMO_BASE_URL` | `https://token-plan-cn.xiaomimimo.com/v1` | 改 endpoint |
+| `MIMO_MODEL` | `mimo-v2.5-pro` | 改模型名 |
+
+### 8.3 实战命令组合
+
+**全量生产配置**（真 embedding + 真 LLM 摘要 + 真聚类）：
+
+```bash
+uv sync --extra st
+export MEMORY_MODULE_USE_MIMO=1
+uv run --env-file .env python demo.py
+```
+
+**只换 embedder，不上 LLM**（向量检索质量更高，但摘要还走拼接）：
+
+```bash
+uv sync --extra st
+uv run python demo.py
+```
+
+**调试用，强制要求真模型（缺依赖直接炸）**：
+
+```bash
+MEMORY_MODULE_EMBEDDING_STRICT=1 uv run python demo.py
+```
+
+**换更大的中文 BGE**：
+
+```bash
+MEMORY_MODULE_EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5 uv run python demo.py
+```
+
+### 8.4 接你自己的实现（OpenAI / Claude / Cohere / 自建服务）
+
+三个 Protocol 都是鸭子类型，**不用继承类、不用 fork 代码**。直接写一个有正确方法的对象塞给 `MemoryService`：
+
+```python
+import numpy as np
+from memory_module.service import MemoryService
+from memory_module.store import SQLiteStore
+
+class OpenAIEmbedder:
+    @property
+    def dim(self) -> int:
+        return 1536
+
+    def embed(self, text: str) -> np.ndarray:
+        # 调你的 OpenAI embedding API
+        vec = openai_client.embeddings.create(
+            input=text, model="text-embedding-3-small",
+        ).data[0].embedding
+        v = np.asarray(vec, dtype=np.float32)
+        return v / (np.linalg.norm(v) + 1e-9)   # 务必 L2 归一化
+
+
+class ClaudeSummarizer:
+    def summarize(self, turns: list) -> str:
+        # turns: list[DialogTurn(role, content)]
+        transcript = "\n".join(f"{t.role}: {t.content}" for t in turns)
+        resp = anthropic_client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=300,
+            messages=[{"role": "user", "content": f"给出对话一句话摘要：\n{transcript}"}],
+        )
+        return resp.content[0].text
+
+
+class MyDetector:
+    def detect(self, errors: list[dict]):
+        # 返回 list[MisconceptionCluster]，至少要有 pattern_id / description / concept_ids
+        ...
+
+svc = MemoryService(
+    store=SQLiteStore(db_path="./memory.db"),
+    embedder=OpenAIEmbedder(),
+    dialog_summarizer=ClaudeSummarizer(),
+    misconception_detector=MyDetector(),
+)
+```
+
+写完后跑一次 `demo.py` 把 store 路径指到内存模式，看断言是否通过 —— 通过就说明接口契约对了。
+
+Protocol 定义见 `memory_module/embedding.py` 的 `Embedder` 和 `memory_module/extractor.py` 的 `DialogSummarizer` / `MisconceptionDetector`。
+
+---
+
+## 9. 不在 v1 范围内
 
 - LLM 上下文管理（你 agent 自己决定把 state 哪些字段塞进 prompt）
 - 认证、限流、家长后台、班级聚合
@@ -252,7 +362,7 @@ sprite  sound  motion  sensing  operator  list
 
 ---
 
-## 9. 排查
+## 10. 排查
 
 - 看 stdout 日志（INFO 级别，关键路径都打）
 - 跑 `demo.py` 看是否所有断言通过 —— 通过就说明服务端没坏，问题在调用方

@@ -23,19 +23,29 @@
 ## 架构
 
 ```
-FastAPI Routes  →  MemoryService  →  MemoryStore  (Protocol)  →  SQLiteStore
-                                  →  Extractor    (Protocol)  →  StubExtractor
-                                  →  Embedder     (Protocol)  →  HashEmbedder
+FastAPI Routes  →  MemoryService  →  MemoryStore   (Protocol)  →  SQLiteStore
+                                  →  Embedder      (Protocol)  →  HashEmbedder / STEmbedder (BGE)
+                                  →  Summarizer    (Protocol)  →  Stub / MiMoDialogSummarizer
+                                  →  Detector      (Protocol)  →  Stub / MiMoMisconceptionDetector
 ```
 
-存储、抽取、向量化都是 Protocol，默认走零依赖的最小实现，可平替为生产级实现：
+存储、抽取、向量化都是 Protocol。**Stub 实现和真实现都已就位**，按需切换：
 
-| 接口 | demo 实现 | 升级路径 |
-|---|---|---|
-| `MemoryStore` | `SQLiteStore` | `PostgresStore` (pgvector) |
-| `Embedder` | `HashEmbedder`（哈希向量） | `SentenceTransformerEmbedder` / API |
-| `DialogSummarizer` | `StubDialogSummarizer`（拼接学生发言） | `LLMDialogSummarizer` |
-| `MisconceptionDetector` | `StubMisconceptionDetector`（按 concept 计数） | `LLMMisconceptionDetector` |
+| 接口 | Stub 实现（默认） | 真实现（仓库里已有） | 升级路径（未实现） |
+|---|---|---|---|
+| `MemoryStore` | `SQLiteStore` | — | `PostgresStore` (pgvector) |
+| `Embedder` | `HashEmbedder` | `STEmbedder`（BGE，`BAAI/bge-small-zh-v1.5`） | OpenAI / Cohere API embedder |
+| `DialogSummarizer` | `StubDialogSummarizer` | `MiMoDialogSummarizer` | Claude / OpenAI summarizer |
+| `MisconceptionDetector` | `StubMisconceptionDetector` | `MiMoMisconceptionDetector` | 其他 LLM |
+
+切换方法：
+
+```bash
+uv sync --extra st              # 装 sentence-transformers，embedder 自动切到真 BGE
+export MEMORY_MODULE_USE_MIMO=1 # 启用 MiMo 摘要 + 迷思聚类（同时需要 MIMO_API_KEY）
+```
+
+详细环境变量表与自定义 Protocol 实现示例见 [AGENT_INTEGRATION.md](AGENT_INTEGRATION.md) 第 8 节。
 
 ## 6 类记忆
 
@@ -70,7 +80,5 @@ uv run uvicorn memory_module.api:app --reload    # 起 HTTP 服务（可选）
 ## 后续演进
 
 - `SQLiteStore` → `PostgresStore` (pgvector)
-- `HashEmbedder` → 真正的 embedding 模型
-- `Stub*` → 接 LLM（Anthropic/OpenAI）做对话摘要与迷思聚类
 - 接入真实教学 agent
 - 加认证、限流、异步抽取队列、家长/教师后台
