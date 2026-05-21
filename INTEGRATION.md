@@ -14,10 +14,10 @@
 1. **写**：每次学生有动作（答对/答错/保存项目/说了偏好/会话结束），发一条事件给它。
 2. **读**：每次开新会话或要决定下一句话怎么说之前，问它「这个学生你记得什么」。
 
-它会替你管 6 类记忆、做语义检索、做学生隔离、持久化到 SQLite。
+它会替你管 6 类记忆、做语义检索、做学生隔离。默认持久化到 SQLite，也可以切到 Milvus。
 
 ```
-你的 Agent  ──HTTP──▶  Memory Module  ──▶  SQLite (memory.db)
+你的 Agent  ──HTTP──▶  Memory Module  ──▶  SQLite (memory.db) / Milvus
         ◀──state/recall──
 ```
 
@@ -46,6 +46,16 @@ curl http://127.0.0.1:8000/health
 MEMORY_MODULE_DB=/var/data/memory.db uv run uvicorn memory_module.api:app
 # 传 :memory: 走纯内存（重启就没了，只用于测试）
 ```
+
+**切到 Milvus**：
+
+```bash
+uv sync --extra milvus
+MEMORY_MODULE_STORE=milvus MEMORY_MODULE_MILVUS_URI=http://localhost:19530 \
+  uv run uvicorn memory_module.api:app
+```
+
+Milvus 适合大量对话摘要/误区向量召回；小规模本地验证继续用 SQLite 更简单。
 
 ---
 

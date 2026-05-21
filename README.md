@@ -23,7 +23,7 @@
 ## 架构
 
 ```
-FastAPI Routes  →  MemoryService  →  MemoryStore   (Protocol)  →  SQLiteStore
+FastAPI Routes  →  MemoryService  →  MemoryStore   (Protocol)  →  SQLiteStore / MilvusStore
                                   →  Embedder      (Protocol)  →  HashEmbedder / STEmbedder (BGE)
                                   →  Summarizer    (Protocol)  →  Stub / MiMoDialogSummarizer
                                   →  Detector      (Protocol)  →  Stub / MiMoMisconceptionDetector
@@ -33,7 +33,7 @@ FastAPI Routes  →  MemoryService  →  MemoryStore   (Protocol)  →  SQLiteSt
 
 | 接口 | Stub 实现（默认） | 真实现（仓库里已有） | 升级路径（未实现） |
 |---|---|---|---|
-| `MemoryStore` | `SQLiteStore` | — | `PostgresStore` (pgvector) |
+| `MemoryStore` | `SQLiteStore` | `MilvusStore` | `PostgresStore` (pgvector) / hybrid SQL+vector |
 | `Embedder` | `HashEmbedder` | `STEmbedder`（BGE，`BAAI/bge-small-zh-v1.5`） | OpenAI / Cohere API embedder |
 | `DialogSummarizer` | `StubDialogSummarizer` | `MiMoDialogSummarizer` | Claude / OpenAI summarizer |
 | `MisconceptionDetector` | `StubMisconceptionDetector` | `MiMoMisconceptionDetector` | 其他 LLM |
@@ -43,6 +43,7 @@ FastAPI Routes  →  MemoryService  →  MemoryStore   (Protocol)  →  SQLiteSt
 ```bash
 uv sync --extra st              # 装 sentence-transformers，embedder 自动切到真 BGE
 export MEMORY_MODULE_USE_MIMO=1 # 启用 MiMo 摘要 + 迷思聚类（同时需要 MIMO_API_KEY）
+export MEMORY_MODULE_STORE=milvus # 可选：把存储后端切到 Milvus（需要 uv sync --extra milvus）
 ```
 
 详细环境变量表与自定义 Protocol 实现示例见 [AGENT_INTEGRATION.md](AGENT_INTEGRATION.md) 第 8 节。
@@ -77,8 +78,24 @@ uv run python chat_cli.py --student alice        # 交互式 REPL（持久化 ./
 uv run uvicorn memory_module.api:app --reload    # 起 HTTP 服务（可选）
 ```
 
+## Milvus 存储后端
+
+SQLite 是默认后端，适合本地 demo 和小规模验证。Milvus 后端已经提供为可选实现，适合对话摘要、错误模式这类向量召回规模变大后的部署。
+
+```bash
+uv sync --extra milvus
+set MEMORY_MODULE_STORE=milvus
+set MEMORY_MODULE_EMBEDDER=hash
+set MEMORY_MODULE_MILVUS_URI=http://localhost:19530
+uv run python scripts/smoke_milvus_store.py
+```
+
+可配置环境变量：`MEMORY_MODULE_MILVUS_URI`、`MEMORY_MODULE_MILVUS_TOKEN`、`MEMORY_MODULE_MILVUS_DB`、`MEMORY_MODULE_MILVUS_PREFIX`、`MEMORY_MODULE_MILVUS_TIMEOUT`、`MEMORY_MODULE_MILVUS_CONSISTENCY`。
+
+注意：向量数据库提升的是大规模检索、并发和工程扩展性；语义质量仍主要取决于 embedding 模型和对话摘要质量。
+
 ## 后续演进
 
-- `SQLiteStore` → `PostgresStore` (pgvector)
+- SQLite/Milvus 混合存储或 `PostgresStore` (pgvector)
 - 接入真实教学 agent
 - 加认证、限流、异步抽取队列、家长/教师后台

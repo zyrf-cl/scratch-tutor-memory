@@ -38,6 +38,20 @@ from .store import MemoryStore, SQLiteStore
 logger = logging.getLogger(__name__)
 
 
+def _build_store(db_path: str, *, vector_dim: int) -> MemoryStore:
+    store_name = os.environ.get("MEMORY_MODULE_STORE", "sqlite").strip().lower()
+    if store_name in {"", "sqlite"}:
+        return SQLiteStore(db_path=db_path)
+    if store_name == "milvus":
+        from .milvus_store import MilvusStore
+
+        return MilvusStore(vector_dim=vector_dim)
+    raise ValueError(
+        f"Unknown MEMORY_MODULE_STORE: {store_name!r} "
+        "(expected 'sqlite' or 'milvus')"
+    )
+
+
 class MemoryService:
     """Routes events / dialog into the appropriate memory channels and
     aggregates the read-side state."""
@@ -375,8 +389,8 @@ def build_default_service(
     summarizer and misconception detector for MiMo-backed ones. The
     store and embedder stay deterministic so semantic recall remains
     reproducible across runs."""
-    store: MemoryStore = SQLiteStore(db_path=db_path)
     embedder = build_embedder(embedder_name)
+    store: MemoryStore = _build_store(db_path=db_path, vector_dim=embedder.dim)
 
     if use_mimo is None:
         use_mimo = (

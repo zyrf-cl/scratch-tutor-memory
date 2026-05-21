@@ -22,6 +22,9 @@ dependencies = [
 st = [
     "sentence-transformers>=3.0",
 ]
+milvus = [
+    "pymilvus>=2.6",
+]
 
 [build-system]
 requires = ["hatchling"]

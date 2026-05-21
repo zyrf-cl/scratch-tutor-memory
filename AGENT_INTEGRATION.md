@@ -21,7 +21,7 @@
 
 外加 agent 侧的运行状态：`recent_feedback_level`、`weak_concepts`、`affective_state`（沮丧/困惑度）—— 这部分让 agent 跨 session 决策时知道该用哪一级提示、要不要先安抚情绪。
 
-**学生之间完全隔离**。SQLite 持久化，开源 MIT。
+**学生之间完全隔离**。默认 SQLite 持久化，也可以切到 Milvus 后端，开源 MIT。
 
 ---
 
@@ -255,13 +255,14 @@ sprite  sound  motion  sensing  operator  list
 | `Embedder` | `bge` 配 hash 退化 | `uv sync --extra st` 装上 sentence-transformers |
 | `DialogSummarizer` | `StubDialogSummarizer`（拼接学生发言） | `MEMORY_MODULE_USE_MIMO=1` + `MIMO_API_KEY` |
 | `MisconceptionDetector` | `StubMisconceptionDetector`（按 concept 计数） | 同上 |
-| `MemoryStore` | `SQLiteStore`（本地文件） | 尚未实现 PostgresStore，自己写或贡献回来 |
+| `MemoryStore` | `SQLiteStore`（本地文件） | `MEMORY_MODULE_STORE=milvus` + `uv sync --extra milvus` |
 
 ### 8.2 完整环境变量表
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
 | `MEMORY_MODULE_DB` | `./memory.db` | SQLite 路径；`:memory:` = 纯内存 |
+| `MEMORY_MODULE_STORE` | `sqlite` | `sqlite` / `milvus` |
 | `MEMORY_MODULE_EMBEDDER` | `bge` | `bge` / `hash` / `stub` |
 | `MEMORY_MODULE_EMBEDDING_MODEL` | `BAAI/bge-small-zh-v1.5` | 任何 sentence-transformers 模型名 |
 | `MEMORY_MODULE_EMBEDDING_DEVICE` | 自动 | `cuda` / `cpu` / `mps` |
@@ -270,6 +271,12 @@ sprite  sound  motion  sensing  operator  list
 | `MIMO_API_KEY` | — | MiMo 必填 |
 | `MIMO_BASE_URL` | `https://token-plan-cn.xiaomimimo.com/v1` | 改 endpoint |
 | `MIMO_MODEL` | `mimo-v2.5-pro` | 改模型名 |
+| `MEMORY_MODULE_MILVUS_URI` | `http://localhost:19530` | Milvus 地址 |
+| `MEMORY_MODULE_MILVUS_TOKEN` | — | Milvus token 或 `user:password` |
+| `MEMORY_MODULE_MILVUS_DB` | — | Milvus database 名 |
+| `MEMORY_MODULE_MILVUS_PREFIX` | `memory_module` | collection 前缀 |
+| `MEMORY_MODULE_MILVUS_TIMEOUT` | `5` | Milvus 操作超时秒数 |
+| `MEMORY_MODULE_MILVUS_CONSISTENCY` | `Strong` | Milvus 一致性级别 |
 
 ### 8.3 实战命令组合
 
@@ -299,6 +306,18 @@ MEMORY_MODULE_EMBEDDING_STRICT=1 uv run python demo.py
 ```bash
 MEMORY_MODULE_EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5 uv run python demo.py
 ```
+
+**切到 Milvus 后端**（需要本机或远端 Milvus 服务）：
+
+```bash
+uv sync --extra milvus
+MEMORY_MODULE_STORE=milvus \
+MEMORY_MODULE_MILVUS_URI=http://localhost:19530 \
+MEMORY_MODULE_EMBEDDER=hash \
+uv run python scripts/smoke_milvus_store.py
+```
+
+Milvus 主要提升大规模向量召回、并发和部署扩展性；小规模 demo 用 SQLite 更简单。召回质量本身仍取决于 embedding 模型和摘要质量，不是换库自动变聪明。
 
 ### 8.4 接你自己的实现（OpenAI / Claude / Cohere / 自建服务）
 
