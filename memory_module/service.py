@@ -23,10 +23,13 @@ from . import schemas as S
 from .concepts import is_valid_concept
 from .embedding import Embedder, build_embedder
 from .extractor import (
+    AffectiveSignalDetector,
     DialogSummarizer,
     MiMoDialogSummarizer,
+    MiMoAffectiveSignalDetector,
     MiMoMisconceptionDetector,
     MisconceptionDetector,
+    StubAffectiveSignalDetector,
     StubDialogSummarizer,
     StubMisconceptionDetector,
 )
@@ -45,12 +48,14 @@ class MemoryService:
         embedder: Embedder,
         dialog_summarizer: DialogSummarizer,
         misconception_detector: MisconceptionDetector,
+        affective_signal_detector: AffectiveSignalDetector,
         misconception_refresh_every: int = 1,
     ) -> None:
         self._store = store
         self._embedder = embedder
         self._summarizer = dialog_summarizer
         self._detector = misconception_detector
+        self._affective = affective_signal_detector
         # Re-run the misconception detector after every N error events.
         # Default 1 = re-run on every error, which is fine for demo scale.
         self._refresh_every = max(1, misconception_refresh_every)
@@ -183,7 +188,16 @@ class MemoryService:
         if turn.concept_id is not None and not is_valid_concept(turn.concept_id):
             raise ValueError(f"unknown concept_id: {turn.concept_id}")
 
+        history = self._store.list_agent_turns(
+            student_id,
+            task_id=turn.task_id or None,
+            limit=10,
+        )
         turn_id = self._store.append_agent_turn(student_id, turn)
+        affective_id = self._store.append_affective_event(
+            student_id,
+            self._affective.detect(turn=turn, history=history),
+        )
 
         # Mirror failed diagnostic turns into the F channel so the
         # existing misconception machinery can still surface long-term
@@ -209,11 +223,12 @@ class MemoryService:
                 self._refresh_misconceptions(student_id, errors)
 
         logger.debug(
-            "agent_turn student=%s task=%s error=%s level=%d",
+            "agent_turn student=%s task=%s error=%s level=%d affective_event=%d",
             student_id,
             turn.task_id,
             turn.primary_error_type,
             turn.feedback_level,
+            affective_id,
         )
         return turn_id
 
@@ -360,7 +375,7 @@ def build_default_service(
     summarizer and misconception detector for MiMo-backed ones. The
     store and embedder stay deterministic so semantic recall remains
     reproducible across runs."""
-    store = SQLiteStore(db_path=db_path)
+    store: MemoryStore = SQLiteStore(db_path=db_path)
     embedder = build_embedder(embedder_name)
 
     if use_mimo is None:
@@ -371,19 +386,23 @@ def build_default_service(
 
     summarizer: DialogSummarizer
     detector: MisconceptionDetector
+    affective_detector: AffectiveSignalDetector
     if use_mimo:
         logger.info("memory_module: using MiMo extractor")
         summarizer = MiMoDialogSummarizer()
         detector = MiMoMisconceptionDetector(threshold=2)
+        affective_detector = MiMoAffectiveSignalDetector()
     else:
         summarizer = StubDialogSummarizer()
         detector = StubMisconceptionDetector(threshold=2)
+        affective_detector = StubAffectiveSignalDetector()
 
     return MemoryService(
         store=store,
         embedder=embedder,
         dialog_summarizer=summarizer,
         misconception_detector=detector,
+        affective_signal_detector=affective_detector,
     )
 
 

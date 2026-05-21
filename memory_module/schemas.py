@@ -180,6 +180,7 @@ class AgentTurnWrite(BaseModel):
     concept_id: Optional[str] = None
     feedback_level: int = Field(default=1, ge=1, le=3)
     feedback_text: str = ""
+    user_text: str = ""
     diff_summary: str = ""
     highlight_node_ids: list[str] = Field(default_factory=list)
     need_rag: bool = False

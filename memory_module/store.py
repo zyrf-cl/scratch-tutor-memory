@@ -125,6 +125,7 @@ CREATE TABLE IF NOT EXISTS agent_turn (
     concept_id             TEXT,
     feedback_level         INTEGER NOT NULL DEFAULT 1,
     feedback_text          TEXT NOT NULL DEFAULT '',
+    user_text              TEXT NOT NULL DEFAULT '',
     diff_summary           TEXT NOT NULL DEFAULT '',
     highlight_node_ids_json TEXT NOT NULL DEFAULT '[]',
     need_rag               INTEGER NOT NULL DEFAULT 0,
@@ -246,6 +247,14 @@ class SQLiteStore:
     def _init_schema(self) -> None:
         with self._lock:
             self._conn.executescript(SCHEMA_SQL)
+            cols = {
+                row[1]
+                for row in self._conn.execute("PRAGMA table_info(agent_turn)")
+            }
+            if "user_text" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE agent_turn ADD COLUMN user_text TEXT NOT NULL DEFAULT ''"
+                )
 
     def close(self) -> None:
         self._conn.close()
@@ -620,10 +629,10 @@ class SQLiteStore:
                 INSERT INTO agent_turn
                     (student_id, session_id, task_id, attempt_id, project_name,
                      passed, score, primary_error_type, concept_id,
-                     feedback_level, feedback_text, diff_summary,
+                     feedback_level, feedback_text, user_text, diff_summary,
                      highlight_node_ids_json, need_rag,
                      need_repair_validation, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     student_id,
@@ -637,6 +646,7 @@ class SQLiteStore:
                     turn.concept_id,
                     turn.feedback_level,
                     turn.feedback_text,
+                    turn.user_text,
                     turn.diff_summary,
                     json.dumps(turn.highlight_node_ids, ensure_ascii=False),
                     int(turn.need_rag),
@@ -668,7 +678,7 @@ class SQLiteStore:
                 """
                 SELECT id, session_id, task_id, attempt_id, project_name,
                        passed, score, primary_error_type, concept_id,
-                       feedback_level, feedback_text, diff_summary,
+                       feedback_level, feedback_text, user_text, diff_summary,
                        highlight_node_ids_json, need_rag,
                        need_repair_validation, created_at
                 FROM agent_turn
@@ -693,11 +703,12 @@ class SQLiteStore:
                 concept_id=r[8],
                 feedback_level=r[9],
                 feedback_text=r[10],
-                diff_summary=r[11],
-                highlight_node_ids=json.loads(r[12]),
-                need_rag=bool(r[13]),
-                need_repair_validation=bool(r[14]),
-                created_at=_parse_iso(r[15]),
+                user_text=r[11],
+                diff_summary=r[12],
+                highlight_node_ids=json.loads(r[13]),
+                need_rag=bool(r[14]),
+                need_repair_validation=bool(r[15]),
+                created_at=_parse_iso(r[16]),
             )
             for r in rows
         ]

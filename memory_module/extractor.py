@@ -44,12 +44,29 @@ class MisconceptionCluster(BaseModel):
     description: str
 
 
+class AffectiveScores(BaseModel):
+    frustration: float
+    confidence: float
+    engagement: float
+    confusion: float
+    evidence: str = ""
+
+
 class DialogSummarizer(Protocol):
     def summarize(self, turns: list[S.DialogTurn]) -> str: ...
 
 
 class MisconceptionDetector(Protocol):
     def detect(self, errors: list[dict[str, Any]]) -> list[MisconceptionCluster]: ...
+
+
+class AffectiveSignalDetector(Protocol):
+    def detect(
+        self,
+        *,
+        turn: S.AgentTurnWrite,
+        history: list[S.AgentTurnRecord],
+    ) -> S.AffectiveEventWrite: ...
 
 
 class StubDialogSummarizer:
@@ -91,14 +108,81 @@ class StubMisconceptionDetector:
         return clusters
 
 
+class StubAffectiveSignalDetector:
+    """Deterministic affective-state heuristic from turn facts."""
+
+    def detect(
+        self,
+        *,
+        turn: S.AgentTurnWrite,
+        history: list[S.AgentTurnRecord],
+    ) -> S.AffectiveEventWrite:
+        repeated = bool(
+            turn.primary_error_type
+            and any(
+                prev.primary_error_type == turn.primary_error_type
+                for prev in history
+            )
+        )
+
+        frustration = 0.1
+        confidence = 0.5
+        engagement = 0.5
+        confusion = 0.1
+
+        if turn.passed:
+            frustration = 0.05
+            confidence = max(0.65, turn.score)
+            engagement = 0.65
+            confusion = 0.05
+        else:
+            frustration = 0.25 + (1.0 - turn.score) * 0.35
+            confidence = max(0.05, turn.score * 0.75)
+            confusion = 0.25 + (1.0 - turn.score) * 0.35
+
+        if repeated:
+            frustration += 0.2
+            confusion += 0.2
+            confidence -= 0.15
+
+        if turn.feedback_level >= 2:
+            confusion += 0.1
+        if turn.feedback_level >= 3:
+            frustration += 0.1
+
+        evidence = (
+            f"mode=rule; passed={turn.passed}; score={turn.score:.2f}; "
+            f"repeated={repeated}; error={turn.primary_error_type}; "
+            f"feedback_level={turn.feedback_level}"
+        )
+        return S.AffectiveEventWrite(
+            session_id=turn.session_id,
+            task_id=turn.task_id,
+            source="agent_inferred",
+            frustration_score=_clamp01(frustration),
+            confidence_score=_clamp01(confidence),
+            engagement_score=_clamp01(engagement),
+            confusion_score=_clamp01(confusion),
+            evidence=evidence,
+        )
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, round(float(value), 3)))
+
+
 __all__ = [
     "MisconceptionCluster",
+    "AffectiveScores",
     "DialogSummarizer",
     "MisconceptionDetector",
+    "AffectiveSignalDetector",
     "StubDialogSummarizer",
     "StubMisconceptionDetector",
+    "StubAffectiveSignalDetector",
     "MiMoDialogSummarizer",
     "MiMoMisconceptionDetector",
+    "MiMoAffectiveSignalDetector",
 ]
 
 
@@ -159,6 +243,7 @@ _DETECTOR_SYSTEM = (
 
 
 _JSON_ARRAY_RE = re.compile(r"\[[\s\S]*\]")
+_JSON_OBJECT_RE = re.compile(r"\{[\s\S]*\}")
 
 
 def _extract_json_array(text: str) -> Any:
@@ -175,6 +260,107 @@ def _extract_json_array(text: str) -> Any:
     if not m:
         raise ValueError("no JSON array in model response")
     return json.loads(m.group(0))
+
+
+def _extract_json_object(text: str) -> Any:
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", text).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    m = _JSON_OBJECT_RE.search(text)
+    if not m:
+        raise ValueError("no JSON object in model response")
+    return json.loads(m.group(0))
+
+
+_AFFECT_SYSTEM = (
+    "你是 Scratch 教学系统的情感状态估计器。"
+    "请根据学生本轮提交事实、最近历史和学生文本，"
+    "输出一个 JSON 对象，字段固定为 "
+    '{"frustration":0-1,"confidence":0-1,"engagement":0-1,"confusion":0-1,"evidence":"..."}。'
+    "这些分数是教学策略信号，不是心理诊断。"
+    "只输出 JSON，不要 markdown，不要解释。"
+)
+
+
+class MiMoAffectiveSignalDetector:
+    """LLM-backed affective-state estimation with deterministic fallback."""
+
+    def __init__(
+        self,
+        client: MiMoClient | None = None,
+        fallback: StubAffectiveSignalDetector | None = None,
+        temperature: float = 0.1,
+    ) -> None:
+        self._client = client or MiMoClient()
+        self._fallback = fallback or StubAffectiveSignalDetector()
+        self._temperature = temperature
+
+    def detect(
+        self,
+        *,
+        turn: S.AgentTurnWrite,
+        history: list[S.AgentTurnRecord],
+    ) -> S.AffectiveEventWrite:
+        repeated = bool(
+            turn.primary_error_type
+            and any(
+                prev.primary_error_type == turn.primary_error_type
+                for prev in history
+            )
+        )
+        recent_errors = [h.primary_error_type for h in history if h.primary_error_type][-5:]
+        payload = {
+            "current_turn": {
+                "session_id": turn.session_id,
+                "task_id": turn.task_id,
+                "passed": turn.passed,
+                "score": turn.score,
+                "primary_error_type": turn.primary_error_type,
+                "concept_id": turn.concept_id,
+                "feedback_level": turn.feedback_level,
+                "feedback_text": turn.feedback_text,
+                "user_text": turn.user_text,
+                "diff_summary": turn.diff_summary,
+            },
+            "history": {
+                "recent_error_types": recent_errors,
+                "repeated_same_error": repeated,
+                "recent_feedback_levels": [h.feedback_level for h in history][-5:],
+            },
+        }
+        try:
+            text = self._client.chat(
+                messages=[
+                    {"role": "system", "content": _AFFECT_SYSTEM},
+                    {
+                        "role": "user",
+                        "content": "请估计本轮教学情感信号：\n"
+                        + json.dumps(payload, ensure_ascii=False),
+                    },
+                ],
+                temperature=self._temperature,
+                max_tokens=3072,
+            )
+            raw = _extract_json_object(text)
+            scores = AffectiveScores.model_validate(raw)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MiMo affect detect failed, using rule fallback: %s", exc)
+            return self._fallback.detect(turn=turn, history=history)
+
+        return S.AffectiveEventWrite(
+            session_id=turn.session_id,
+            task_id=turn.task_id,
+            source="agent_inferred",
+            frustration_score=_clamp01(scores.frustration),
+            confidence_score=_clamp01(scores.confidence),
+            engagement_score=_clamp01(scores.engagement),
+            confusion_score=_clamp01(scores.confusion),
+            evidence=(scores.evidence or "mode=llm").strip()[:500],
+        )
 
 
 class MiMoMisconceptionDetector:
