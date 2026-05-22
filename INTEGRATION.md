@@ -59,7 +59,7 @@ Milvus 适合大量对话摘要/误区向量召回；小规模本地验证继续
 
 ---
 
-## 三、4 个 HTTP 端点
+## 三、7 个 HTTP 端点
 
 `student_id` 自己定，字符串就行（学号/uuid/微信 openid 都可以）。**不同 student_id 之间完全隔离。**
 
@@ -117,6 +117,76 @@ Milvus 适合大量对话摘要/误区向量召回；小规模本地验证继续
 返回 `[{"kind": "...", "score": 0.83, "payload": {...}}, ...]`，按相关性降序。
 
 **调用时机**：学生当前发言可能勾起历史话题时（比如"那个小猫的项目"），用学生发言当 query 拉相关历史。
+
+### 5. `POST /students/{student_id}/agent-turns` — 写一次 agent 诊断回合
+
+请求体示例：
+
+```json
+{
+  "session_id": "s2",
+  "task_id": "loop-cat",
+  "attempt_id": "a-002",
+  "project_name": "loop-cat",
+  "passed": false,
+  "score": 0.35,
+  "primary_error_type": "WRONG_STRUCTURE",
+  "concept_id": "loop",
+  "feedback_level": 2,
+  "feedback_text": "先找 forever 积木，再看运动积木是不是放进去了。",
+  "user_text": "我还是不会，这个太难了",
+  "diff_summary": "missing forever block around motion",
+  "highlight_node_ids": ["block-1"],
+  "need_rag": false,
+  "need_repair_validation": false
+}
+```
+
+服务端会自动：记录最近错误与反馈等级、推断薄弱概念、生成一条情感事件；启用 `MEMORY_MODULE_USE_MIMO=1` 时优先走 MiMo 做服务端情感判断。返回 `{"turn_id": 12}`。
+
+### 6. `GET /students/{student_id}/agent-memory?session_id=...&task_id=...` — 读取 agent 决策快照
+
+返回结构（关键字段）示例：
+
+```json
+{
+  "recent_feedbacks": ["先看 forever 放的位置"],
+  "recent_error_types": ["WRONG_STRUCTURE"],
+  "recent_feedback_level": 2,
+  "repeated_error_count": 0,
+  "mastered_concepts": [],
+  "weak_concepts": ["loop"],
+  "affective_state": {
+    "frustration": 0.53,
+    "confidence": 0.22,
+    "engagement": 0.5,
+    "confusion": 0.63
+  }
+}
+```
+
+**调用时机**：生成下一句反馈前，或跨 session 恢复某个 task 的教学状态前。
+
+### 7. `POST /students/{student_id}/affective-events` — 可选：显式写情感信号
+
+当你已经有外部情感识别器、传感器或前端埋点时，可以单独写入情感信号。否则通常只写 `/agent-turns` 就够了，避免双写。
+
+请求体示例：
+
+```json
+{
+  "session_id": "s2",
+  "task_id": "loop-cat",
+  "frustration_score": 0.8,
+  "confusion_score": 0.7,
+  "confidence_score": 0.2,
+  "engagement_score": 0.5,
+  "source": "agent_inferred",
+  "evidence": "连续两次同类错误"
+}
+```
+
+返回 `{"event_id": 5}`。
 
 ---
 

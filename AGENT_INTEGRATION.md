@@ -165,7 +165,7 @@ svc.handle_affective_event("alice", S.AffectiveEventWrite(
 uv run uvicorn memory_module.api:app --port 8000
 ```
 
-4 个端点，全部按 `student_id` 分片：
+7 个常用端点，全部按 `student_id` 分片：
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
@@ -173,8 +173,13 @@ uv run uvicorn memory_module.api:app --port 8000
 | POST | `/students/{sid}/dialog` | 写对话流，body = `{"turns": [...]}` |
 | GET  | `/students/{sid}/state` | 拿完整画像 |
 | GET  | `/students/{sid}/recall?query=...&kind=dialog&top_k=5` | 语义检索 |
+| POST | `/students/{sid}/agent-turns` | 写一次 agent 诊断回合 |
+| GET  | `/students/{sid}/agent-memory?session_id=...&task_id=...` | 读 agent 决策快照 |
+| POST | `/students/{sid}/affective-events` | 可选：显式写情感信号 |
 
-Swagger 文档：`http://127.0.0.1:8000/docs`。详细端点契约见 `INTEGRATION.md`。
+如果你是 PracticeAgent 风格的接法，通常只需要写 `agent-turns`，不需要重复写 `/affective-events`；服务端会自动产出情感事件并在 `agent-memory` 里聚合成 `affective_state`。
+
+Swagger 文档：`http://127.0.0.1:8000/docs`。详细端点契约见 `INTEGRATION.md` 和 `AGENT_SERVICE_INTEGRATION.md`。
 
 ---
 
@@ -234,7 +239,7 @@ sprite  sound  motion  sensing  operator  list
 
 **3. 默认 embedder 行为** → 开箱即用时，`Embedder` 默认是 `bge`（真 sentence-transformers 模型），但用 `FallbackEmbedder` 包了一层 —— 没装 `sentence-transformers` extra 时会**静默退到 hash**。要看到退化日志或强制要求真模型，见第 8 节。
 
-**4. 对话摘要 / 迷思聚类的 LLM 实现已写好但默认关闭** → 设 `MEMORY_MODULE_USE_MIMO=1` + `MIMO_API_KEY` 才会启用。详见第 8 节。
+**4. 对话摘要 / 迷思聚类 / 服务端情感判断的 LLM 实现已写好但默认关闭** → 设 `MEMORY_MODULE_USE_MIMO=1` + `MIMO_API_KEY` 才会启用。详见第 8 节。
 
 **5. 没有认证、没有限流** → HTTP 模式不要直接暴露公网。挂内网或加网关。
 
@@ -246,7 +251,7 @@ sprite  sound  motion  sensing  operator  list
 
 ## 8. 升级到生产实现
 
-模块里 `Embedder` / `DialogSummarizer` / `MisconceptionDetector` 都是 Protocol，**Stub 实现和真实现都已经写好了**，按下面切换即可。
+模块里 `Embedder` / `DialogSummarizer` / `MisconceptionDetector` / `AffectiveSignalDetector` 都是 Protocol，**Stub 实现和真实现都已经写好了**，按下面切换即可。
 
 ### 8.1 升级一览
 
@@ -255,6 +260,7 @@ sprite  sound  motion  sensing  operator  list
 | `Embedder` | `bge` 配 hash 退化 | `uv sync --extra st` 装上 sentence-transformers |
 | `DialogSummarizer` | `StubDialogSummarizer`（拼接学生发言） | `MEMORY_MODULE_USE_MIMO=1` + `MIMO_API_KEY` |
 | `MisconceptionDetector` | `StubMisconceptionDetector`（按 concept 计数） | 同上 |
+| `AffectiveSignalDetector` | `StubAffectiveSignalDetector`（规则判别） | 同上 |
 | `MemoryStore` | `SQLiteStore`（本地文件） | `MEMORY_MODULE_STORE=milvus` + `uv sync --extra milvus` |
 
 ### 8.2 完整环境变量表
@@ -267,7 +273,7 @@ sprite  sound  motion  sensing  operator  list
 | `MEMORY_MODULE_EMBEDDING_MODEL` | `BAAI/bge-small-zh-v1.5` | 任何 sentence-transformers 模型名 |
 | `MEMORY_MODULE_EMBEDDING_DEVICE` | 自动 | `cuda` / `cpu` / `mps` |
 | `MEMORY_MODULE_EMBEDDING_STRICT` | `0` | 设 `1` 时缺依赖直接报错，不退化 |
-| `MEMORY_MODULE_USE_MIMO` | `0` | 设 `1` 启用 MiMo 摘要 + 迷思聚类 |
+| `MEMORY_MODULE_USE_MIMO` | `0` | 设 `1` 启用 MiMo 摘要 + 迷思聚类 + 服务端情感判断 |
 | `MIMO_API_KEY` | — | MiMo 必填 |
 | `MIMO_BASE_URL` | `https://token-plan-cn.xiaomimimo.com/v1` | 改 endpoint |
 | `MIMO_MODEL` | `mimo-v2.5-pro` | 改模型名 |
@@ -280,7 +286,7 @@ sprite  sound  motion  sensing  operator  list
 
 ### 8.3 实战命令组合
 
-**全量生产配置**（真 embedding + 真 LLM 摘要 + 真聚类）：
+**全量生产配置**（真 embedding + 真 LLM 摘要 + 真聚类 + 真服务端情感判断）：
 
 ```bash
 uv sync --extra st
@@ -369,7 +375,7 @@ svc = MemoryService(
 
 写完后跑一次 `demo.py` 把 store 路径指到内存模式，看断言是否通过 —— 通过就说明接口契约对了。
 
-Protocol 定义见 `memory_module/embedding.py` 的 `Embedder` 和 `memory_module/extractor.py` 的 `DialogSummarizer` / `MisconceptionDetector`。
+Protocol 定义见 `memory_module/embedding.py` 的 `Embedder` 和 `memory_module/extractor.py` 的 `DialogSummarizer` / `MisconceptionDetector` / `AffectiveSignalDetector`。
 
 ---
 

@@ -41,7 +41,7 @@ MIMO_API_KEY=...
 
 说明：
 
-- 开了 `MEMORY_MODULE_USE_MIMO=1` 后，服务端会对对话摘要和迷思聚类启用 MiMo。
+- 开了 `MEMORY_MODULE_USE_MIMO=1` 后，服务端会对对话摘要、迷思聚类和 `POST /agent-turns` 触发的情感判断启用 MiMo。
 - 对 `POST /agent-turns` 写入的 agent 回合，服务端会自动做情感判断。
 - 如果 MiMo 不可用，服务端会自动回退到规则判断。
 
@@ -94,7 +94,7 @@ curl "http://127.0.0.1:8000/students/alice/agent-memory?session_id=s2&task_id=lo
   "recent_feedbacks": ["先看 forever 放的位置"],
   "recent_error_types": ["WRONG_STRUCTURE"],
   "recent_feedback_level": 2,
-  "repeated_error_count": 1,
+  "repeated_error_count": 0,
   "mastered_concepts": [],
   "weak_concepts": ["loop"],
   "affective_state": {
