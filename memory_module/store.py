@@ -202,6 +202,9 @@ class MemoryStore(Protocol):
         pattern_id: str,
         description: str,
         embedding: list[float],
+        *,
+        occurrences: Optional[int] = None,
+        last_seen: Optional[datetime] = None,
     ) -> None: ...
     def list_misconceptions(self, student_id: str) -> list[S.MisconceptionRecord]: ...
     def search_misconceptions(
@@ -563,25 +566,58 @@ class SQLiteStore:
         pattern_id: str,
         description: str,
         embedding: list[float],
+        *,
+        occurrences: Optional[int] = None,
+        last_seen: Optional[datetime] = None,
     ) -> None:
-        now = _iso(_utc_now())
+        seen_at = _iso(last_seen) if last_seen is not None else _iso(_utc_now())
         emb_json = json.dumps(embedding)
         with self._lock:
-            self._conn.execute(
-                """
-                INSERT INTO misconception
-                    (student_id, pattern_id, description, occurrences,
-                     last_seen, embedding_json, embedder_dim)
-                VALUES (?, ?, ?, 1, ?, ?, ?)
-                ON CONFLICT(student_id, pattern_id) DO UPDATE SET
-                    description    = excluded.description,
-                    occurrences    = misconception.occurrences + 1,
-                    last_seen      = excluded.last_seen,
-                    embedding_json = excluded.embedding_json,
-                    embedder_dim   = excluded.embedder_dim
-                """,
-                (student_id, pattern_id, description, now, emb_json, len(embedding)),
-            )
+            if occurrences is None:
+                # No authoritative count supplied: preserve the legacy
+                # increment-on-conflict behaviour as a fallback.
+                self._conn.execute(
+                    """
+                    INSERT INTO misconception
+                        (student_id, pattern_id, description, occurrences,
+                         last_seen, embedding_json, embedder_dim)
+                    VALUES (?, ?, ?, 1, ?, ?, ?)
+                    ON CONFLICT(student_id, pattern_id) DO UPDATE SET
+                        description    = excluded.description,
+                        occurrences    = misconception.occurrences + 1,
+                        last_seen      = excluded.last_seen,
+                        embedding_json = excluded.embedding_json,
+                        embedder_dim   = excluded.embedder_dim
+                    """,
+                    (student_id, pattern_id, description, seen_at, emb_json, len(embedding)),
+                )
+            else:
+                # Authoritative count from the detector: set it directly so
+                # occurrences reflects the true number of contributing errors
+                # and last_seen tracks the most recent one.
+                self._conn.execute(
+                    """
+                    INSERT INTO misconception
+                        (student_id, pattern_id, description, occurrences,
+                         last_seen, embedding_json, embedder_dim)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(student_id, pattern_id) DO UPDATE SET
+                        description    = excluded.description,
+                        occurrences    = excluded.occurrences,
+                        last_seen      = excluded.last_seen,
+                        embedding_json = excluded.embedding_json,
+                        embedder_dim   = excluded.embedder_dim
+                    """,
+                    (
+                        student_id,
+                        pattern_id,
+                        description,
+                        int(occurrences),
+                        seen_at,
+                        emb_json,
+                        len(embedding),
+                    ),
+                )
 
     def list_misconceptions(self, student_id: str) -> list[S.MisconceptionRecord]:
         with self._lock:

@@ -151,7 +151,12 @@ class MemoryService:
         for cluster in clusters:
             emb = self._embedder.embed(cluster.description).tolist()
             self._store.upsert_misconception(
-                student_id, cluster.pattern_id, cluster.description, emb
+                student_id,
+                cluster.pattern_id,
+                cluster.description,
+                emb,
+                occurrences=cluster.occurrences,
+                last_seen=cluster.last_seen,
             )
 
     # ----- read paths -----

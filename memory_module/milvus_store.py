@@ -532,12 +532,21 @@ class MilvusStore:
         pattern_id: str,
         description: str,
         embedding: list[float],
+        *,
+        occurrences: Optional[int] = None,
+        last_seen: Optional[datetime] = None,
     ) -> None:
         now = _utc_now()
-        existing = self._query_one("misconception", student_id, pattern_id)
-        occurrences = 1
-        if existing:
-            occurrences = int(_payload(existing).get("occurrences") or 0) + 1
+        seen_at = last_seen or now
+        if occurrences is None:
+            # Legacy fallback: increment based on any existing record.
+            existing = self._query_one("misconception", student_id, pattern_id)
+            resolved_occurrences = 1
+            if existing:
+                resolved_occurrences = int(_payload(existing).get("occurrences") or 0) + 1
+        else:
+            # Authoritative count from the detector — set it directly.
+            resolved_occurrences = int(occurrences)
         self._upsert_record(
             "misconception",
             pk=self._pk("misconception", student_id, pattern_id),
@@ -546,11 +555,11 @@ class MilvusStore:
             payload={
                 "pattern_id": pattern_id,
                 "description": description,
-                "occurrences": occurrences,
-                "last_seen": _iso(now),
+                "occurrences": resolved_occurrences,
+                "last_seen": _iso(seen_at),
             },
             vector=embedding,
-            created_at=now,
+            created_at=seen_at,
         )
 
     def list_misconceptions(self, student_id: str) -> list[S.MisconceptionRecord]:

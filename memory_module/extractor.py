@@ -29,7 +29,8 @@ import json
 import logging
 import re
 from collections import Counter
-from typing import Any, Protocol
+from datetime import datetime
+from typing import Any, Optional, Protocol
 
 from pydantic import BaseModel
 
@@ -42,6 +43,10 @@ logger = logging.getLogger(__name__)
 class MisconceptionCluster(BaseModel):
     pattern_id: str
     description: str
+    # Authoritative count of contributing error events (not an increment).
+    occurrences: int = 1
+    # Timestamp of the most recent contributing error, if known.
+    last_seen: Optional[datetime] = None
 
 
 class AffectiveScores(BaseModel):
@@ -102,6 +107,10 @@ class StubMisconceptionDetector:
                         description=(
                             f"Repeatedly struggles with '{concept}' "
                             f"— observed {n} times"
+                        ),
+                        occurrences=n,
+                        last_seen=_latest_created_at(
+                            e for e in errors if e.get("concept_id") == concept
                         ),
                     )
                 )
@@ -169,6 +178,29 @@ class StubAffectiveSignalDetector:
 
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, round(float(value), 3)))
+
+
+def _latest_created_at(errors: Any) -> Optional[datetime]:
+    """Return the most recent ``created_at`` among ``errors``, if parseable.
+
+    Error rows carry ``created_at`` as an ISO string (SQLite) or may omit
+    it; we parse defensively and return ``None`` when nothing is usable so
+    the store can fall back to its own clock.
+    """
+    latest: Optional[datetime] = None
+    for err in errors:
+        raw = err.get("created_at") if isinstance(err, dict) else None
+        if not raw:
+            continue
+        try:
+            parsed = datetime.fromisoformat(raw) if isinstance(raw, str) else raw
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(parsed, datetime):
+            continue
+        if latest is None or parsed > latest:
+            latest = parsed
+    return latest
 
 
 __all__ = [
@@ -419,7 +451,29 @@ class MiMoMisconceptionDetector:
             if not pid or not desc or pid in seen:
                 continue
             seen.add(pid)
-            clusters.append(MisconceptionCluster(pattern_id=pid, description=desc))
+
+            # Derive authoritative occurrence count / recency from the
+            # contributing errors the model attributed to this cluster.
+            raw_concepts = item.get("concept_ids")
+            cluster_concepts = {
+                str(c)
+                for c in (raw_concepts if isinstance(raw_concepts, list) else [])
+                if c
+            }
+            contributing = [
+                e
+                for e in errors
+                if cluster_concepts and e.get("concept_id") in cluster_concepts
+            ]
+            occurrences = len(contributing) or 1
+            clusters.append(
+                MisconceptionCluster(
+                    pattern_id=pid,
+                    description=desc,
+                    occurrences=occurrences,
+                    last_seen=_latest_created_at(contributing),
+                )
+            )
 
         if not clusters:
             # Model returned [] or pure garbage — fall back so F channel
