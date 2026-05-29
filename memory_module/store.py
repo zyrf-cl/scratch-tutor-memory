@@ -247,14 +247,34 @@ class SQLiteStore:
     def _init_schema(self) -> None:
         with self._lock:
             self._conn.executescript(SCHEMA_SQL)
-            cols = {
-                row[1]
-                for row in self._conn.execute("PRAGMA table_info(agent_turn)")
-            }
-            if "user_text" not in cols:
-                self._conn.execute(
-                    "ALTER TABLE agent_turn ADD COLUMN user_text TEXT NOT NULL DEFAULT ''"
-                )
+            # Additive column migrations for DBs created by older versions.
+            # CREATE TABLE IF NOT EXISTS leaves pre-existing tables untouched,
+            # so columns added after a table's first creation must be backfilled
+            # here with the same DEFAULT used in SCHEMA_SQL.
+            self._ensure_column(
+                "agent_turn", "user_text", "TEXT NOT NULL DEFAULT ''"
+            )
+            self._ensure_column(
+                "dialog_summary", "embedder_dim", "INTEGER NOT NULL DEFAULT 0"
+            )
+            self._ensure_column(
+                "misconception", "embedder_dim", "INTEGER NOT NULL DEFAULT 0"
+            )
+
+    def _ensure_column(self, table: str, column: str, column_def: str) -> None:
+        """Add ``column`` to ``table`` if a legacy DB is missing it.
+
+        ``table`` and ``column`` are internal constants (never user input),
+        so interpolating them into the DDL is safe here.
+        """
+        cols = {
+            row[1] for row in self._conn.execute(f"PRAGMA table_info({table})")
+        }
+        if column not in cols:
+            self._conn.execute(
+                f"ALTER TABLE {table} ADD COLUMN {column} {column_def}"
+            )
+            logger.info("migrated %s: added column %s", table, column)
 
     def close(self) -> None:
         self._conn.close()
