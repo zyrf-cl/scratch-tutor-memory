@@ -190,6 +190,75 @@ Milvus 适合大量对话摘要/误区向量召回；小规模本地验证继续
 
 ---
 
+## 三·补、上下文管理（独立功能）
+
+> 这是和上面 7 个端点**解耦**的独立功能：短期「工作上下文」缓冲——你把正在进行的对话推进来，按预算取回一个窗口塞给 LLM。它和 C 通道（对话历史 → 摘要 + 向量化的**长期**记忆）是两回事，自带独立的 `context_message` 表，互不影响。
+
+`session_id` 标识一条对话线程；`student_id` 仍做隔离分片。
+
+### C1. `POST /students/{sid}/context/{session_id}/messages` — 追加上下文消息
+
+```json
+{
+  "messages": [
+    {"role": "system", "content": "你是 Scratch 编程老师", "pinned": true},
+    {"role": "user", "content": "怎么让小猫跳起来？"},
+    {"role": "assistant", "content": "用「change y by」积木……"}
+  ]
+}
+```
+
+- `role`：`system` / `user` / `assistant` / `tool`
+- `pinned`：`true` 的消息（如 system prompt）取窗口时**永不被裁掉**
+- `token_count`：可选；传了用你的精确值，不传服务端按 `len/4` 粗估
+- `metadata`：可选 dict
+
+返回 `{"appended": 3, "total_messages": 3, "total_tokens": 42}`。
+
+### C2. `GET /students/{sid}/context/{session_id}?max_tokens=2000&max_turns=20` — 取窗口
+
+- 不带预算 → 返回全部消息（按时间顺序）
+- 带 `max_tokens` / `max_turns` → 保留全部 `pinned`，再用**最近**的消息按「新→旧」填，直到任一预算用满；结果按时间顺序返回
+
+```json
+{
+  "student_id": "alice", "session_id": "sess-1",
+  "messages": [
+    {"id": 1, "seq": 1, "role": "system", "content": "...", "pinned": true,
+     "token_count": 8, "created_at": "..."}
+  ],
+  "total_messages": 12, "returned_messages": 6, "total_tokens": 1980,
+  "truncated": true, "compaction_note": null
+}
+```
+
+`truncated=true` 表示有较旧消息被窗口裁掉。`compaction_note` 预留给未来的 LLM 摘要压缩器，当前恒为 `null`。
+
+### C3. `GET /students/{sid}/context/{session_id}/stats` — 统计
+
+返回 `{"student_id", "session_id", "message_count", "total_tokens", "last_updated"}`。
+
+### C4. `DELETE /students/{sid}/context/{session_id}` — 清空该线程上下文
+
+返回 `{"deleted": 12}`。
+
+**库模式**（同进程可跳过 HTTP）：
+
+```python
+from memory_module.context import build_default_context_service, ContextMessage
+
+ctx = build_default_context_service(db_path="./memory.db")
+ctx.append("alice", "sess-1", [
+    ContextMessage(role="system", content="你是 Scratch 老师", pinned=True),
+    ContextMessage(role="user", content="怎么让小猫跳起来？"),
+])
+window = ctx.get_window("alice", "sess-1", max_tokens=2000)
+```
+
+环境变量：`MEMORY_MODULE_CONTEXT_DB`（拆到独立库文件）、`MEMORY_MODULE_CONTEXT_MAX_TOKENS` / `MEMORY_MODULE_CONTEXT_MAX_TURNS`（默认窗口预算，可被请求参数覆盖）。
+
+---
+
 ## 四、五种事件 — 写入路径
 
 每种事件都包成 `{"event": <下面这些>}` 发到 `POST /students/{sid}/events`。
@@ -345,7 +414,7 @@ hits  = svc.recall("alice", query="小猫", kind="dialog", top_k=3)
 - 没有删除接口（删学生、删某条记忆）。临时清理用 `chat_cli.py` 的 `/clear` 或直接 `DELETE FROM ... WHERE student_id=?`。
 - 默认 embedder 是哈希向量，**召回质量不如真模型**。上线前换掉（见 README 的「升级路径」）。
 - 对话摘要默认是 stub（拼接学生发言）。生产请配 LLM summarizer。
-- 不做 LLM 上下文管理——你 agent 要自己决定把 state 的哪些字段塞进 prompt。
+- 短期上下文管理已作为**独立功能**提供（见「三·补」：缓冲 + 按预算窗口化）；但**基于 LLM 的溢出自动摘要压缩**仍未接入——已留好 `Compactor` 接口，默认只按时间新近度裁剪。
 
 ---
 
