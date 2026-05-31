@@ -14,3 +14,6 @@ build/
 
 # Third-party agent repo — not part of this project
 ai-programming-system-backend_hxh/
+
+# Internal working docs — local only, not on GitHub
+docs/

@@ -43,8 +43,9 @@ def _parse_iso(s: str) -> datetime:
     return datetime.fromisoformat(s)
 
 
-CONTEXT_SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS context_message (
+def _schema_sql(table: str) -> str:
+    return f"""
+CREATE TABLE IF NOT EXISTS {table} (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     student_id    TEXT NOT NULL,
     session_id    TEXT NOT NULL,
@@ -54,13 +55,18 @@ CREATE TABLE IF NOT EXISTS context_message (
     name          TEXT,
     token_count   INTEGER NOT NULL DEFAULT 0,
     pinned        INTEGER NOT NULL DEFAULT 0,
-    metadata_json TEXT NOT NULL DEFAULT '{}',
+    metadata_json TEXT NOT NULL DEFAULT '{{}}',
     created_at    TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_context_message_thread
-    ON context_message(student_id, session_id, seq);
+CREATE INDEX IF NOT EXISTS idx_{table}_thread
+    ON {table}(student_id, session_id, seq);
 """
+
+
+# Default-table schema, kept as a module constant for back-compat / callers
+# that introspect it. Other tables are created via :func:`_schema_sql`.
+CONTEXT_SCHEMA_SQL = _schema_sql("context_message")
 
 
 class ContextStore(Protocol):
@@ -92,8 +98,13 @@ class SQLiteContextStore:
     """Default :class:`ContextStore`. Single connection guarded by a
     lock — same shape as the parent ``SQLiteStore``."""
 
-    def __init__(self, db_path: str = ":memory:") -> None:
+    def __init__(self, db_path: str = ":memory:", *, table: str = "context_message") -> None:
+        # table is a trusted internal identifier (never user input); validate
+        # anyway so it is always safe to interpolate into the SQL below.
+        if not table.isidentifier():
+            raise ValueError(f"invalid table name: {table!r}")
         self._db_path = db_path
+        self._table = table
         if db_path != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(
@@ -109,7 +120,7 @@ class SQLiteContextStore:
         self._conn.execute("PRAGMA busy_timeout = 5000")
         self._lock = threading.Lock()
         with self._lock:
-            self._conn.executescript(CONTEXT_SCHEMA_SQL)
+            self._conn.executescript(_schema_sql(self._table))
 
     def close(self) -> None:
         self._conn.close()
@@ -148,7 +159,7 @@ class SQLiteContextStore:
         records: list[ContextMessageRecord] = []
         with self._lock:
             cur = self._conn.execute(
-                "SELECT COALESCE(MAX(seq), 0) FROM context_message "
+                f"SELECT COALESCE(MAX(seq), 0) FROM {self._table} "
                 "WHERE student_id = ? AND session_id = ?",
                 (student_id, session_id),
             )
@@ -162,8 +173,8 @@ class SQLiteContextStore:
                 )
                 meta_json = json.dumps(msg.metadata, ensure_ascii=False)
                 ins = self._conn.execute(
-                    """
-                    INSERT INTO context_message
+                    f"""
+                    INSERT INTO {self._table}
                         (student_id, session_id, seq, role, content, name,
                          token_count, pinned, metadata_json, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -205,7 +216,7 @@ class SQLiteContextStore:
     ) -> list[ContextMessageRecord]:
         with self._lock:
             cur = self._conn.execute(
-                f"SELECT {self._SELECT_COLS} FROM context_message "
+                f"SELECT {self._SELECT_COLS} FROM {self._table} "
                 "WHERE student_id = ? AND session_id = ? ORDER BY seq",
                 (student_id, session_id),
             )
@@ -223,7 +234,7 @@ class SQLiteContextStore:
     ) -> list[ContextMessageRecord]:
         with self._lock:
             cur = self._conn.execute(
-                f"SELECT {self._SELECT_COLS} FROM context_message "
+                f"SELECT {self._SELECT_COLS} FROM {self._table} "
                 "WHERE student_id = ? AND session_id = ? AND pinned = 1 "
                 "ORDER BY seq",
                 (student_id, session_id),
@@ -235,7 +246,7 @@ class SQLiteContextStore:
         with self._lock:
             cur = self._conn.execute(
                 "SELECT COUNT(*), COALESCE(SUM(token_count), 0), MAX(created_at) "
-                "FROM context_message WHERE student_id = ? AND session_id = ?",
+                f"FROM {self._table} WHERE student_id = ? AND session_id = ?",
                 (student_id, session_id),
             )
             count, tokens, last = cur.fetchone()
@@ -250,7 +261,7 @@ class SQLiteContextStore:
     def clear(self, student_id: str, session_id: str) -> int:
         with self._lock:
             cur = self._conn.execute(
-                "DELETE FROM context_message "
+                f"DELETE FROM {self._table} "
                 "WHERE student_id = ? AND session_id = ?",
                 (student_id, session_id),
             )

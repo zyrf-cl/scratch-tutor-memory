@@ -22,7 +22,12 @@ from typing import Literal, Optional
 from fastapi import Depends, FastAPI, HTTPException
 
 from . import schemas as S
-from .context import build_context_router, build_default_context_service
+from .context import (
+    build_context_router,
+    build_default_context_service,
+    build_default_user_context_service,
+    build_user_context_router,
+)
 from .service import MemoryService, build_default_service
 
 logger = logging.getLogger(__name__)
@@ -43,11 +48,18 @@ def build_app(db_path: str | None = None) -> FastAPI:
     application = FastAPI(title="Scratch Teaching Agent — Memory Module")
 
     # Context management is a separate, decoupled feature: its own store,
-    # service and schemas, sharing no state with MemoryService. We only
-    # mount its router here, at the composition root. It co-locates in the
-    # same DB file by default (override with MEMORY_MODULE_CONTEXT_DB).
+    # service and schemas, sharing no state with MemoryService. Two
+    # independent streams, each its own store/table and router:
+    #   - per-session context  (table context_message)
+    #   - per-user context, shared across all of a user's sessions
+    #     (table user_context_message)
+    # Both co-locate in the same DB file by default (override with
+    # MEMORY_MODULE_CONTEXT_DB).
     application.include_router(
         build_context_router(build_default_context_service(db_path=db_path))
+    )
+    application.include_router(
+        build_user_context_router(build_default_user_context_service(db_path=db_path))
     )
 
     def _get_service() -> MemoryService:

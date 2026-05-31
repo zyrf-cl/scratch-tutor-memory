@@ -14,7 +14,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 
 from . import schemas as CS
-from .service import ContextService
+from .service import ContextService, UserContextService
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,17 @@ logger = logging.getLogger(__name__)
 # policy (the real budget is the compactor's job).
 _MAX_TURNS_CAP = 10_000
 _MAX_TOKENS_CAP = 2_000_000
+
+
+def _validate_budgets(max_tokens: Optional[int], max_turns: Optional[int]) -> None:
+    if max_tokens is not None and not (1 <= max_tokens <= _MAX_TOKENS_CAP):
+        raise HTTPException(
+            status_code=400, detail=f"max_tokens must be in [1, {_MAX_TOKENS_CAP}]"
+        )
+    if max_turns is not None and not (1 <= max_turns <= _MAX_TURNS_CAP):
+        raise HTTPException(
+            status_code=400, detail=f"max_turns must be in [1, {_MAX_TURNS_CAP}]"
+        )
 
 
 def build_context_router(service: ContextService) -> APIRouter:
@@ -56,16 +67,7 @@ def build_context_router(service: ContextService) -> APIRouter:
         max_turns: Optional[int] = None,
         svc: ContextService = Depends(_get_service),
     ) -> CS.ContextWindow:
-        if max_tokens is not None and not (1 <= max_tokens <= _MAX_TOKENS_CAP):
-            raise HTTPException(
-                status_code=400,
-                detail=f"max_tokens must be in [1, {_MAX_TOKENS_CAP}]",
-            )
-        if max_turns is not None and not (1 <= max_turns <= _MAX_TURNS_CAP):
-            raise HTTPException(
-                status_code=400,
-                detail=f"max_turns must be in [1, {_MAX_TURNS_CAP}]",
-            )
+        _validate_budgets(max_tokens, max_turns)
         return svc.get_window(
             student_id,
             session_id,
@@ -95,4 +97,61 @@ def build_context_router(service: ContextService) -> APIRouter:
     return router
 
 
-__all__ = ["build_context_router"]
+def build_user_context_router(service: UserContextService) -> APIRouter:
+    """Router for the cross-session, per-user context stream.
+
+    Fully decoupled from the per-session router: its own paths (no
+    ``session_id`` segment) backed by an independent
+    :class:`UserContextService`."""
+    router = APIRouter(tags=["user-context"])
+
+    def _get_service() -> UserContextService:
+        return service
+
+    @router.post(
+        "/students/{student_id}/user-context/messages",
+        response_model=CS.AppendResult,
+    )
+    def append_user(
+        student_id: str,
+        request: CS.AppendContextRequest,
+        svc: UserContextService = Depends(_get_service),
+    ) -> CS.AppendResult:
+        if not request.messages:
+            raise HTTPException(status_code=400, detail="messages must not be empty")
+        return svc.append(student_id, request.messages)
+
+    @router.get(
+        "/students/{student_id}/user-context",
+        response_model=CS.ContextWindow,
+    )
+    def get_user_window(
+        student_id: str,
+        max_tokens: Optional[int] = None,
+        max_turns: Optional[int] = None,
+        svc: UserContextService = Depends(_get_service),
+    ) -> CS.ContextWindow:
+        _validate_budgets(max_tokens, max_turns)
+        return svc.get_window(student_id, max_tokens=max_tokens, max_turns=max_turns)
+
+    @router.get(
+        "/students/{student_id}/user-context/stats",
+        response_model=CS.ContextStats,
+    )
+    def get_user_stats(
+        student_id: str,
+        svc: UserContextService = Depends(_get_service),
+    ) -> CS.ContextStats:
+        return svc.stats(student_id)
+
+    @router.delete("/students/{student_id}/user-context")
+    def clear_user_context(
+        student_id: str,
+        svc: UserContextService = Depends(_get_service),
+    ) -> dict[str, int]:
+        return {"deleted": svc.clear(student_id)}
+
+    return router
+
+
+__all__ = ["build_context_router", "build_user_context_router"]

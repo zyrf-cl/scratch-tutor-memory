@@ -69,7 +69,7 @@ class ContextWindow(BaseModel):
     """The bounded working window returned to the agent."""
 
     student_id: str
-    session_id: str
+    session_id: Optional[str] = None
     messages: list[ContextMessageRecord] = Field(default_factory=list)
     total_messages: int = 0
     returned_messages: int = 0
@@ -88,7 +88,7 @@ class AppendResult(BaseModel):
 
 class ContextStats(BaseModel):
     student_id: str
-    session_id: str
+    session_id: Optional[str] = None
     message_count: int = 0
     total_tokens: int = 0
     last_updated: Optional[datetime] = None

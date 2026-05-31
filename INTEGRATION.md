@@ -192,9 +192,12 @@ Milvus 适合大量对话摘要/误区向量召回；小规模本地验证继续
 
 ## 三·补、上下文管理（独立功能）
 
-> 这是和上面 7 个端点**解耦**的独立功能：短期「工作上下文」缓冲——你把正在进行的对话推进来，按预算取回一个窗口塞给 LLM。它和 C 通道（对话历史 → 摘要 + 向量化的**长期**记忆）是两回事，自带独立的 `context_message` 表，互不影响。
+> 这是和上面 7 个端点**解耦**的独立功能：短期「工作上下文」缓冲——你把正在进行的对话推进来，按预算取回一个窗口塞给 LLM。它和 C 通道（对话历史 → 摘要 + 向量化的**长期**记忆）是两回事，互不影响。
 
-`session_id` 标识一条对话线程；`student_id` 仍做隔离分片。
+它分两条**互不共享状态**的独立流（各自独立的表 / store / service / router，`student_id` 都做隔离分片）：
+
+- **session 级**（`/context/{session_id}`）：单条对话线程的工作上下文，`session_id` 标识线程，存 `context_message` 表。
+- **用户级 / 跨 session**（`/user-context`）：跨该用户所有 session 的上下文（长期目标、稳定偏好提示等），接口只认 `student_id`、不带 session，存独立的 `user_context_message` 表，窗口/统计返回里 `session_id` 恒为 `null`。
 
 ### C1. `POST /students/{sid}/context/{session_id}/messages` — 追加上下文消息
 
@@ -242,20 +245,41 @@ Milvus 适合大量对话摘要/误区向量召回；小规模本地验证继续
 
 返回 `{"deleted": 12}`。
 
+### C5–C8. 用户级 / 跨 session（`/user-context`，无 session 段）
+
+和 C1–C4 字段、窗口语义完全一致，区别只有：路径不带 `session_id`，按 `student_id` 维护一条**跨该用户所有 session**的上下文流；窗口/统计返回里 `session_id` 恒为 `null`。适合放长期目标、稳定偏好提示这类跨课时都该带上的内容。
+
+- `POST   /students/{sid}/user-context/messages` — 追加（body 同 C1）→ `{"appended", "total_messages", "total_tokens"}`
+- `GET    /students/{sid}/user-context?max_tokens=&max_turns=` — 取窗口（结构同 C2，`session_id` 为 `null`）
+- `GET    /students/{sid}/user-context/stats` — 统计 → `{"student_id", "session_id": null, "message_count", "total_tokens", "last_updated"}`
+- `DELETE /students/{sid}/user-context` — 清空该用户的跨 session 上下文 → `{"deleted": N}`
+
 **库模式**（同进程可跳过 HTTP）：
 
 ```python
-from memory_module.context import build_default_context_service, ContextMessage
+from memory_module.context import (
+    build_default_context_service,
+    build_default_user_context_service,
+    ContextMessage,
+)
 
+# session 级：单条对话线程
 ctx = build_default_context_service(db_path="./memory.db")
 ctx.append("alice", "sess-1", [
     ContextMessage(role="system", content="你是 Scratch 老师", pinned=True),
     ContextMessage(role="user", content="怎么让小猫跳起来？"),
 ])
 window = ctx.get_window("alice", "sess-1", max_tokens=2000)
+
+# 用户级 / 跨 session：只认 student_id，无 session 段
+uctx = build_default_user_context_service(db_path="./memory.db")
+uctx.append("alice", [
+    ContextMessage(role="system", content="长期目标：做一个跑酷游戏", pinned=True),
+])
+user_window = uctx.get_window("alice", max_tokens=2000)
 ```
 
-环境变量：`MEMORY_MODULE_CONTEXT_DB`（拆到独立库文件）、`MEMORY_MODULE_CONTEXT_MAX_TOKENS` / `MEMORY_MODULE_CONTEXT_MAX_TURNS`（默认窗口预算，可被请求参数覆盖）。
+环境变量：`MEMORY_MODULE_CONTEXT_DB`（把 `context_message` / `user_context_message` 两张表拆到独立库文件）、`MEMORY_MODULE_CONTEXT_MAX_TOKENS` / `MEMORY_MODULE_CONTEXT_MAX_TURNS`（默认窗口预算，可被请求参数覆盖）。
 
 ---
 

@@ -21,8 +21,15 @@ See ``README.md`` ("上下文管理（独立功能）") for the design rationale
 
 from __future__ import annotations
 
-from .api import build_context_router
-from .compaction import Compactor, CompactionResult, TruncatingCompactor
+from .api import build_context_router, build_user_context_router
+from .compaction import (
+    Compactor,
+    CompactionResult,
+    ContextSummarizer,
+    KimiContextSummarizer,
+    LLMSummarizingCompactor,
+    TruncatingCompactor,
+)
 from .schemas import (
     AppendContextRequest,
     AppendResult,
@@ -33,7 +40,12 @@ from .schemas import (
     Role,
     estimate_tokens,
 )
-from .service import ContextService, build_default_context_service
+from .service import (
+    ContextService,
+    UserContextService,
+    build_default_context_service,
+    build_default_user_context_service,
+)
 from .store import CONTEXT_SCHEMA_SQL, ContextStore, SQLiteContextStore
 
 __all__ = [
@@ -41,6 +53,9 @@ __all__ = [
     "ContextService",
     "build_default_context_service",
     "build_context_router",
+    "UserContextService",
+    "build_default_user_context_service",
+    "build_user_context_router",
     # store
     "ContextStore",
     "SQLiteContextStore",
@@ -49,6 +64,9 @@ __all__ = [
     "Compactor",
     "CompactionResult",
     "TruncatingCompactor",
+    "ContextSummarizer",
+    "LLMSummarizingCompactor",
+    "KimiContextSummarizer",
     # schemas
     "Role",
     "estimate_tokens",
